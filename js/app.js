@@ -719,6 +719,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // Import tab switching in playlist modal
+    // Inject Audio Import UI
+    const existingImportTab = document.querySelector('.import-tab');
+    const importPanelContainer = document.getElementById('csv-import-panel')?.parentElement;
+
+    if (existingImportTab && importPanelContainer && !document.querySelector('[data-import-type="audio"]')) {
+        const audioTab = existingImportTab.cloneNode(true);
+        audioTab.dataset.importType = 'audio';
+        audioTab.textContent = 'Audio';
+        audioTab.classList.remove('active');
+        audioTab.style.opacity = '0.7';
+        existingImportTab.parentElement.appendChild(audioTab);
+
+        const audioPanel = document.createElement('div');
+        audioPanel.id = 'audio-import-panel';
+        audioPanel.style.display = 'none';
+        audioPanel.innerHTML = `
+            <div class="form-group">
+                <label for="audio-file-input" style="display: block; margin-bottom: 0.5rem; color: var(--muted-foreground);">Upload Songs</label>
+                <input type="file" id="audio-file-input" multiple accept="audio/*,.mp3,.flac,.m4a,.wav,.ogg,.opus,.aac" style="width: 100%; padding: 0.5rem; background: var(--card); border: 1px solid var(--border); border-radius: 4px; color: var(--foreground);">
+                <p style="font-size: 0.8rem; color: var(--muted-foreground); margin-top: 0.5rem;">Select audio files from your device. These will be stored locally.</p>
+            </div>
+        `;
+        importPanelContainer.appendChild(audioPanel);
+    }
+
     document.querySelectorAll('.import-tab').forEach((tab) => {
         tab.addEventListener('click', () => {
             const importType = tab.dataset.importType;
@@ -737,6 +762,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('xspf-import-panel').style.display = importType === 'xspf' ? 'block' : 'none';
             document.getElementById('xml-import-panel').style.display = importType === 'xml' ? 'block' : 'none';
             document.getElementById('m3u-import-panel').style.display = importType === 'm3u' ? 'block' : 'none';
+            if(document.getElementById('audio-import-panel')) document.getElementById('audio-import-panel').style.display = importType === 'audio' ? 'block' : 'none';
 
             // Clear all file inputs except the active one
             document.getElementById('csv-file-input').value =
@@ -749,6 +775,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 importType === 'xml' ? document.getElementById('xml-file-input').value : '';
             document.getElementById('m3u-file-input').value =
                 importType === 'm3u' ? document.getElementById('m3u-file-input').value : '';
+            if(document.getElementById('audio-file-input')) document.getElementById('audio-file-input').value =
+                importType === 'audio' ? document.getElementById('audio-file-input').value : '';
         });
     });
     const spotifyBtn = document.getElementById('csv-spotify-btn');
@@ -1185,6 +1213,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('xspf-file-input').value = '';
             document.getElementById('xml-file-input').value = '';
             document.getElementById('m3u-file-input').value = '';
+            if (document.getElementById('audio-file-input')) {
+                document.getElementById('audio-file-input').value = '';
+            }
 
             // Reset import tabs to CSV
             document.querySelectorAll('.import-tab').forEach((tab) => {
@@ -1195,6 +1226,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('xspf-import-panel').style.display = 'none';
             document.getElementById('xml-import-panel').style.display = 'none';
             document.getElementById('m3u-import-panel').style.display = 'none';
+            if (document.getElementById('audio-import-panel')) document.getElementById('audio-import-panel').style.display = 'none';
 
             // Reset Public Toggle
             const publicToggle = document.getElementById('playlist-public-toggle');
@@ -1317,6 +1349,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const xspfFileInput = document.getElementById('xspf-file-input');
                     const xmlFileInput = document.getElementById('xml-file-input');
                     const m3uFileInput = document.getElementById('m3u-file-input');
+                    const audioFileInput = document.getElementById('audio-file-input');
 
                     const importOptions = { strictArtistMatch: true, strictAlbumMatch: isStrictAlbumMatch };
 
@@ -1803,6 +1836,72 @@ document.addEventListener('DOMContentLoaded', async () => {
                         } catch (error) {
                             console.error('Failed to parse M3U!', error);
                             alert('Failed to parse M3U file! ' + error.message);
+                            progressElement.style.display = 'none';
+                            return;
+                        } finally {
+                            setTimeout(() => {
+                                progressElement.style.display = 'none';
+                            }, 1000);
+                        }
+                    } else if (audioFileInput && audioFileInput.files.length > 0) {
+                        // Import Audio Files
+                        importSource = 'audio_upload';
+                        const files = Array.from(audioFileInput.files);
+                        const {
+                            progressElement,
+                            progressFill,
+                            progressCurrent,
+                            progressTotal,
+                            currentTrackElement,
+                            currentArtistElement,
+                        } = setupProgressElements();
+
+                        try {
+                            progressElement.style.display = 'block';
+                            progressFill.style.width = '0%';
+                            progressCurrent.textContent = '0';
+                            progressTotal.textContent = files.length.toString();
+                            currentTrackElement.textContent = 'Reading audio files...';
+                            if (currentArtistElement) currentArtistElement.textContent = '';
+
+                            const { readTrackMetadata } = await loadMetadataModule();
+                            let processedCount = 0;
+
+                            for (const file of files) {
+                                currentTrackElement.textContent = file.name;
+                                try {
+                                    const metadata = await readTrackMetadata(file);
+                                    // Create a unique ID for uploaded file
+                                    metadata.id = `upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                                    // Attach the file object so the player can access it
+                                    metadata.file = file;
+                                    // Also set audioUrl to object URL for immediate playback (though player usually handles 'file' prop if adapted)
+                                    // But standard player might expect audioUrl or be adapted. 
+                                    // Based on local files logic, we store file handle/object. 
+                                    // We'll set audioUrl to a blob URL as a fallback, but note it expires on reload.
+                                    // However, saving 'metadata' to IDB will save the File object.
+                                    metadata.audioUrl = URL.createObjectURL(file);
+                                    
+                                    tracks.push(metadata);
+                                } catch (e) {
+                                    console.warn('Failed to read metadata for', file.name, e);
+                                    // Add as basic track if metadata fails
+                                    tracks.push({
+                                        id: `upload-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                                        title: file.name,
+                                        artist: { name: 'Unknown Artist' },
+                                        file: file,
+                                        audioUrl: URL.createObjectURL(file)
+                                    });
+                                }
+                                processedCount++;
+                                const percentage = (processedCount / files.length) * 100;
+                                progressFill.style.width = `${percentage}%`;
+                                progressCurrent.textContent = processedCount.toString();
+                            }
+                        } catch (e) {
+                            console.error('Audio import failed', e);
+                            alert('Failed to import audio files: ' + e.message);
                             progressElement.style.display = 'none';
                             return;
                         } finally {
